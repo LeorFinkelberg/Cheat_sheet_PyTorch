@@ -1101,6 +1101,183 @@ conv = nn.Conv2d(3, 16, kernel_size=(3, 3))
 
 Первый набор ядер работает с маленькими окрестностями низкоуровневых признаков первого порядка, а второй набор фактически работает с более широкими окрестностями, \emph{генерируя признаки, представляющие собой композицию предыдущих признаков}. Благодаря этому замечательному механизму сверточные нейронные сети способны анализировать очень сложные кадры.
 
+\begin{lstlisting}[
+style = bash,
+numbers = none
+]
+# свертка + нелинейность + пулинг
+model = nn.Sequential(
+    nn.Conv2d(3, 16, kernel_size=3, padding=1),  # свертка
+    nn.Tanh(),  # нелинейность
+    nn.MaxPool2d(2),  # пулинг
+    nn.Conv2d(16, 8, kernel_size=3, padding=1),
+    nn.Tanh(),
+    nn.MaxPool2d(2),
+    ...
+)
+\end{lstlisting}
+
+Первая операция свертки превращает три канала RGB в 16, благодаря чему у сети появляется возможность генерировать \emph{16 независимых признаков} (16 каналов). Далее мы применяем функцию активации \verb|Tanh|. Полученное 16-канальное изображение $32 \times 32$ субдискритизируется первым слоем \verb|nn.MaxPool2d| до 16-канального изображения $16 \times 16$. 
+
+Теперь субдискретизированное изображение подвергается еще одной операции свертки, выдающей на выходе 8-канальный выходной сигнал $16 \times 16$. Если повезет, это выходное изображение будет состоять из высокоуровневых признаков. И опять же мы применяем функцию активации \verb|Tanh|, после чего производим субдискретизацию до 8-канального выходного изображения $8 \times 8 $.
+
+После уменьшения входного изображения до набора $8 \times 8$ признаков можно надеяться вернуть из сети значения вероятностей, подходящих для подачи на вход отрицательной логарифмической функции правдоподобия. Нужно преобразовать 8-канальное изображение $8 \times 8$ в одномерный вектор и завершить нашу сеть набором полносвязаных слоев
+\begin{lstlisting}[
+style = bash,
+numbers = none
+]
+model = nn.Sequential(
+    nn,Conv2d(3, 16, kernel_size=3, padding=1),
+    nn.Tanh(),
+    nn.MaxPool2d(2),
+    nn.Conv2d(16, 8, kernel_size=3, padding=1),
+    nn.Tanh(),
+    nn.MaxPool2d(2),
+    ...  # Пропущен важный момент
+    nn.Linear(8 * 8 * 8, 32),
+    nn.Tanh(),
+    nn.Linear(32, 2),
+)
+\end{lstlisting}
+
+Для \underline{повышения} \emph{разрешающих возможностей модели} можно \emph{увеличить количество выходных каналов} сверточных слоев (то есть число \emph{признаков}, генерируемых каждым из сверточных слоев), в результате чего увеличится и размер линейного слоя.
+
+PyTorch позволяет производить в модели любые вычисления путем создания подклассов \verb|nn.Module|.
+
+Готовые или пользовательские свертки как подмодули обычно включаются в программу посредством описания в конструкторе \verb|__init__| и присваивания их \verb|self| для использования в функции \verb|forward|. Их параметры в то же время храняться в них на протяжении всего жизненного цикла нашего модуля. Обратите внимание, что перед этим необходимо вызывать \verb|super().__init__()|.
+
+\section{Обобщения с помощью сверток}
+
+\subsection{Сеть как подкласс \texttt{nn.Module}}
+
+Задача классификационных сетей обычно заключается в сжатии информации в том смысле, что мы начинаем с изображения, содержащего значительное количество пикселей, и сжимаем его в вектор вероятностей классов.
+
+Для создания подкласса \verb|nn.Module| как минимум необходимо описать функцию \verb|forward|, принимающую входные сигналы модуля и возвращающую выходной.
+
+Подмодули должны быть атрибутами верхнего уровня, а не быть <<закопаны>> внутри экземпляров list или dict! В противном случае оптимизатор не сможет их (а значит, и их параметры) найти. На случай, если модели потребуется список или ассоциативный массив подмодулей, в PyTorch есть классы \verb|nn.ModuleList| и \verb|nn.ModuleDict| \cite[\strbook{269}]{pytorch-2022}. 
+
+\subsection{Функциональные API}
+
+В PyTorch есть \emph{функциональные} аналоги для всех модулей \verb|nn|. Под функциональными здесь подразумевается <<без внутреннего состояния>> -- другими словами, <<выходное значение которых целиком и полностью определяется значениями входных аргументов>>. 
+
+\begin{lstlisting}[
+style = ironpython,
+numbers = none
+]
+import torch.nn.functional as F
+
+class Net(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.conv1 = nn.Conv2d(3, 16, kernel_size=3, padding=1)
+        self.conv2 = nn.Conv2d(16, 8, kernel_size=3, padding=1)
+        self.fc1 = nn.Linear(8 * 8 * 8, 32)
+        self.fc2 = nn.Linear(32, 2)
+        
+   def forward(self, x):
+       out = F.max_pool2d(  # пулинг
+           torch.tanh(  # нелинейность
+               self.conv1(x)  # свертка
+           ), 2)
+       out = F.max_pool2d(
+           torch.tanh(
+               self.conv2(x)
+           ), 2)
+       out = out.view(-1, 8 * 8 * 8)
+       out = torch.tanh(self.fc1(out))
+       out = self.fc2(out)
+       
+       return out
+\end{lstlisting}
+
+\subsection{Обучение модели}
+
+В основе сверточной сети лежат два вложенных цикла: внешний -- по \emph{эпохам}, а внутренний -- на основе объекта \verb|DataLoader|, генерирующего батчи из объекта \verb|Dataset|. На каждой итерации цикла необходимо \cite[\strbook{273}]{pytorch-2022}:
+\begin{itemize}
+	\item Пропустить входные сигналы через модель (прямой проход).
+	
+	\item Вычислить функцию потерь (также часть прямого прохода).
+	
+	\item Обнулить все старые градиенты.
+	
+	\item Вызвать \verb|loss.backward()| для вычисления градиентов функции потерь относительно каждого из параметров (обратный проход).
+	
+	\item Оптимизировать в сторону уменьшения потерь.
+\end{itemize}
+
+\begin{lstlisting}[
+style = bash,
+numbers = none
+]
+import datetime
+
+def training_loop(n_epochs, optimizer, model, loss_fn, train_loader):
+    for epoch in range(1, n_epochs + 1):
+        loss_train = 0.0
+        for imgs, labels in train_loader:
+            outputs = model(imgs)
+            loss = loss_fn(outputs, labels)
+            
+            # избавляемся от градиентов с предыдущих итераций
+            optimizer.zero_grad()
+            # выполняем обратный проход; то есть вычисляем градиенты
+            # по всем обучаемым параметрам сети
+            loss.backward()
+            # обновляем модель
+            optimizer.step()
+            # суммируем потери за этоху
+            loss_train += loss.item()
+            
+     if epoch == 1 or epoch % 10 == 0:
+         # получаем средние потери на батч
+         print("{} Epoch {}, Training loss {}".format(
+             datetime.datetime.now(), epoch,
+             loss_train / len(train_loader))
+         )
+\end{lstlisting}
+
+Обучение в течение 100 эпох
+\begin{lstlisting}[
+style = bash,
+numbers = none
+]
+# Объект DataLoader организует примеры данных из нашего набора по батчам.
+# Перетасовка обеспечивает случайный порядок примеров данных из набора
+train_loader = torch.utils.data.DataLoader(cifar2, batch_size=64, shuffle=False)
+
+model = Net()
+optimizer = optim.SGD(model.parameters(), lr=1e-02)
+loss_fn = nn.CrossEntropyLoss()
+
+training_loop(
+    n_epochs=100,
+    optimizer=optimizer,
+    model=model,
+    loss_fn=loss_fn,
+    train_loader=train_loader,
+)
+\end{lstlisting}
+
+Сохранить модель можно так
+\begin{lstlisting}[
+style = bash,
+numbers = none
+]
+# сохраняютс только веса
+torch.save(model.state_dict(), data_path + "birds_vs_airplanes.pt")
+\end{lstlisting}
+
+Файл \verb|birds_vs_airplanes.pt| теперь содержит все параметры объекта \verb|model|: весовые коэффициенты и смещения для двух модулей свертки и двух линейных модулей. Никакой структуры, только весовые коэффициенты. Это значит, что при развертывании модели в реальных условиях нам понадобится описание класса \verb|model|
+\begin{lstlisting}[
+style = bash,
+numbers = none	
+]
+loaded_model = Net()
+loaded_model.load_state_dict(torch.load(data_path + "birds_vs_airplanes.pt))
+\end{lstlisting}
+
+
+
 
 
 % Источники в "Газовой промышленности" нумеруются по мере упоминания 
