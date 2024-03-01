@@ -1276,6 +1276,73 @@ loaded_model = Net()
 loaded_model.load_state_dict(torch.load(data_path + "birds_vs_airplanes.pt))
 \end{lstlisting}
 
+В \verb|nn.Module| есть реализована функция \verb|.to|, перемещающая все параметры в GPU (или приводящая тип данных, если передать ей аргумент \verb|dtype|). 
+
+Между \verb|Module.to| и \verb|Tensor.to| существует тонкое различие. \verb|Module.to| производит операции с заменой на месте, то есть изменяет экземпляр модуля. А \verb|Tensor.to| -- нет, возвращая \emph{новый тензор}.
+
+Рекомендуемой практикой является создание экземпляра \verb|Optimizer| \emph{после} перемещения всех параметров на нужное устройство \cite[\strbook{275}]{pytorch-2022}.
+
+Перенос вычислений на GPU при его наличии считается хорошим стилем программирования. Неплохим паттерном программирования будет установка значения переменной \verb|device| в зависимости от \verb|torch.cuda.is_avaible|:
+\begin{lstlisting}[
+style = bash,
+numbers = none
+]
+device = (
+    torch.device("cuda") if torch.cuda.is_avaible() else torch.device("cpu")
+)
+\end{lstlisting}
+
+\begin{lstlisting}[
+style = bash,
+numbers = none
+]
+def training_loop(
+    n_epochs, optimizer,
+    model, loss_fn, train_loader
+):
+    for epoch in range(1, n_epochs + 1):
+        loss_train = 0.0
+        for imgs, labels in train_loader:
+            imgs = imgs.to(device=device)  # NB
+            labels = labels.to(device=device)  # NB
+            outputs = model(imgs)
+            loss = loss_fn(outputs, labels)
+\end{lstlisting}
+
+Можно создать экземпляр модели и перенести ее на \verb|device|
+\begin{lstlisting}[
+style = bash,
+numbers = none
+]
+train_loader = torch.utils.data.DataLoader(cifar2, batch_size=64, shuffle=True)
+
+# перенести модель (все ее параметры) на GPU
+model = Net().to(device=device)
+optimizer = optim.SGD(model.parameters(), lr=1e-02)
+loss_fn = nn.CrossEntropyLoss()
+
+training_loop(
+    n_epochs=100,
+    optimizer=optimizer,
+    model=model,
+    loss_fn=loss_fn,
+    train_loader=train_loader,
+)
+\end{lstlisting}
+
+Если забыть перенести саму модель или входные данные на GPU, вы получите сообщения об ошибках, указывающие, что тензоры располагаются на различных устройствах, поскольку операторы PyTorch не поддерживают смеси входных данных на GPU и CPU.
+
+PyTorch попытается загрузить веса на то же устройство, с которого они были сохранены, то есть весовые коэффициенты с GPU будут восстановлены на GPU. Лаконичным вариантом будет потребовать от PyTorch переопределить информацию об устройстве при загрузке весовых коэффициентов
+\begin{lstlisting}[
+style = bash,
+numbers = none
+]
+loaded_model = Net().to(device=device)
+loaded_model.load_state_dict(torch.load(data_path + "birds_vs_airplanes.pt", map_location=device))
+\end{lstlisting}
+
+
+
 
 
 
