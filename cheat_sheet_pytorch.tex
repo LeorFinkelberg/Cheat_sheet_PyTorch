@@ -2005,6 +2005,102 @@ from scipy.ndimage.measurements import label
 labled_array, n_features = label(image)
 \end{lstlisting}
 
+Обратите внимание, что случайные прогнозы на \emph{сбалансированном} наборе данных дают значение $AUC = 0.5$, так что наш классификатор должен по крайней мере превосходить это значение.
+
+\subsubsection{Повторное использование весов: тонкая настройка}
+
+Один из способов быстро получить результаты (а зачастую и обойтись гораздо меньшим объемом данных) -- не задавать веса случайно, а взять сеть, обученную какой-либо задаче со связанными данными. Это называется \emph{передачей обучения} или, когда речь идет об обучении нескольких последних слоев, \emph{тонкой настройкой}. 
+
+То есть мы рассматриваем некоторую (часто большую) часть сети как некий \emph{распознаватель признаков}, а обучаем только относительно небольшую часть поверх нее.
+
+Обычно это прекрасно работает. Переобучим \verb|head_linear| и последний сверточный блок:
+\begin{itemize}
+	\item загрузить нужные начальные веса модели, за исключением последнего линейного слоя, в котором нужна случайная инициализация,
+	
+	\item {\color{blue}отключить градиенты для параметров, которые мы \emph{не хотим обучать} (все кроме параметров с именами, начинающимися со слова \verb|head|)}.
+\end{itemize}
+
+\begin{lstlisting}[
+style = ironpython,
+numbers = none
+]
+d = torch.load(self.cli_args.finetune, map_location="cpu")
+model_blocks = [
+    n for n, subm in model.named_children()
+    if len(list(subm.parameters())) > 0
+]
+
+finetune_blocks = model_blocks[-self.cli_args.finetune_depth:]
+model.load_state_dict(
+    {
+        k: v for k, v in d["model_state"].items()
+        if k.split(".")[0] not in model_blocks[-1]
+    },
+    strict=False
+)
+for n, p in model.named_parameters():
+    if n.split(".")[0] not in finetune_blocks:
+        # для всех, кроме finetune_blocks, градиенты не нужны
+        p.requires_grad_(False)
+\end{lstlisting}
+
+Если обучения только полносвязной части в методе тонкой настройки недостаточно, то нужно попробовать включить в обучение последний сверточный блок \cite[\strbook{512}]{pytorch-2022}.
+
+Если сеть становится слишком самоуверенной, то можно попробовать просто не применять однократное распределение, а вместо этого присвоить небольшую вероятностную массу <<неправильным>> классам. Для этого можно использовать \verb|nn.KLDivLoss| \cite[\strbook{523}]{pytorch-2022}.
+
+HTTP старой школы \emph{глубоко последователен}, то есть, когда клиент хочет отправить несколько запросов в одном и том же подключении, следующий запрос отправляется только после того, как будет получен ответ на предыдущий \cite[\strbook{538}]{pytorch-2022}.
+
+При использовании графических процессоров часто гораздо эффективнее обрабатывать запросы \emph{пакетами}, чем запускать их один за другим или параллельно.
+
+\subsection{Встроенный механизм экспорта PyTorch: отслеживание}
+
+Если совместимость не столь важна, но все еще нужно обойти Python GIL или иным образом экспортировать сеть, мы можем использовать собственное представление PyTorch, называемое TorchScript graph.
+
+Самый простой способ создать модель TorchScript -- отследить ее. Этот механизм работает точно таке же, как экспорт ONNX. Здесь мы просто подаем в модель фиктивные входные данные с помощью функции \verb|torch.jit.trace|. Загружаем обученные параметры и переводим модель в режим оценки. Прежде чем выполнить отслеживание модели, дадим еще одно предостережение: \emph{\color{blue} ни один из параметров не должен требовать градиентов}. Даже если мы проследим модель внутри \verb|no_grad|, а затем запустим ее снаружи, PyTorch запишет градиенты.
+
+\begin{lstlisting}[
+style = ironpython,
+numbers = none
+]
+import torch
+
+seg_dict = torch.load(".../best.state", map_location="cpu")
+
+seg_model = UNetWrapper(in_channels=8, n_classes=1, depth=4, wf=3, padding=True, batch_norm=True, up_mode="upconv")
+seg_model.load_state_dict(seg_dict["model_state"])
+seg_model.eval()
+for p in seg_model.parameters():
+    p.requires_grad_(False)
+    
+dummy_input = torch.randn(1, 8, 512, 512)
+traced_seg_model = torch.jit.trace(seg_model, dummy_input)  # отслеживание
+\end{lstlisting}
+
+Можно сохранить отслеженную модель
+\begin{lstlisting}[
+style = ironpython,
+numbers = none
+]
+torch.jit.save(traced_seg_model, "traced_seg_model.pt")
+\end{lstlisting}
+и загрузить ее обратно с сохраненным файлом
+\begin{lstlisting}[
+style = ironpython,
+numbers = none
+]
+loaded_model = torch.jit.load("traced_seg_model.pt")
+prediction = loaded_model(batch)
+\end{lstlisting}
+
+PyTorch JIT запомнит состояние модели в момент сохранения, то есть настройку в режим оценки и отключение требования градиентов.
+
+Существует два простых способа создания модели TorchScript \cite[\strbook{553}]{pytorch-2022}: 
+\begin{itemize}
+	\item отслеживание -- это выполнение обычно модели PyTorch на случайных входных данных.
+	
+	\item создание сценариев: сценарии PyTorch JIT просматривают фактический код Python, отвечающий за вычисления, и компилируют его в TorchScript IR.
+\end{itemize}
+
 
 
 
